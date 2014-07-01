@@ -461,6 +461,7 @@ class Cart {
 		if( ! is_null(array_keys($attributes, array('qty', 'price'))))
 		{
 			$row->put('subtotal', $row->qty * $row->price);
+			$row->applyConditions();
 		}
 
 		$cart->put($rowId, $row);
@@ -479,7 +480,7 @@ class Cart {
 	 * @param  Array  $options Array of additional options, such as 'size' or 'color'
 	 * @return Collection
 	 */
-	protected function createRow($rowId, $id, $name, $qty, $price, $options)
+	protected function createRow($rowId, $id, $name, $qty, $price, $options, $conditions)
 	{
 		$cart = $this->getContentItems();
 
@@ -493,6 +494,8 @@ class Cart {
 			'conditions' => new Collection($conditions),
 			'subtotal' => $qty * $price
 		), $this->associatedModel, $this->associatedModelNamespace);
+
+		$newRow->applyConditions();
 
 		$cart->put($rowId, $newRow);
 

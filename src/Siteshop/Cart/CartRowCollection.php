@@ -42,7 +42,7 @@ class CartRowCollection extends Collection {
 
 		if($arg == strtolower($this->associatedModel))
 		{
-			$modelInstance = $this->associatedModelNamespace ? $this->associatedModelNamespace . '\\' .$this->associatedModel : $this->associatedModel;
+			$modelInstance = $this->associatedModelNamespace ? $this->associatedModelNamespace . '\\' . $this->associatedModel : $this->associatedModel;
 			$model = new $modelInstance;
 
 			return $model->find($this->id);
@@ -68,6 +68,25 @@ class CartRowCollection extends Collection {
 		}
 
 		return $found;
+	}
+
+	public function applyConditions()
+	{
+		$subtotal = 0;
+		$discount = 0;
+
+		dump_exit($this->get('conditions')->toArray());
+
+		foreach($this->get('conditions') as $condition)
+		{
+			$subtotal = $condition->apply($this);
+
+			$this->put($condition->target(), $subtotal);
+
+			$discount += $condition->result();
+		}
+
+		$this->put('discount', $discount);
 	}
 
 }
