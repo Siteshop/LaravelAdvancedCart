@@ -268,7 +268,7 @@ class Cart {
 		$total = 0;
 		$cart = ($cart ? $cart : $this->getContent());
 
-		if(empty($cart->get('items')))
+		if( ! $cart->has('items') )
 		{
 			return $total;
 		}
