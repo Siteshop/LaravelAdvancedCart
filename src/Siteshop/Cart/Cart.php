@@ -41,6 +41,13 @@ class Cart {
 	protected $associatedModelNamespace;
 
 	/**
+	 *   Cart content
+	 *
+	 *   @var CartCollection
+	 */
+	protected $cart;
+
+	/**
 	 *   Order in which the conditions are applied
 	 *
 	 *   @var  array
@@ -256,27 +263,34 @@ class Cart {
 	 *
 	 * @return float
 	 */
-	public function subtotal()
+	public function subtotal($cart = null)
 	{
 		$total = 0;
-		$cart = $this->getContentItems();
+		$cart = ($cart ? $cart : $this->getContent());
 
-		if(empty($cart))
+		if(empty($cart->get('items')))
 		{
 			return $total;
 		}
 
-		foreach($cart AS $row)
+		foreach($cart->get('items') AS $row)
 		{
-			$total += $row->subtotal;
+			$total += $row->get('subtotal', 0);
 		}
 
-		return max($total, 0);
+		$total = max($total, 0);
+
+		if( ! $cart->has('subtotal') )
+			$cart->put('subtotal', $total);
+
+		return $total;
 	}
 
-	public function total()
+	public function total($cart = false)
 	{
-		return max($this->getContent()->get('subtotal'), 0);
+		$cart = $cart = ($cart ? $cart : $this->getContent());
+
+		return max($cart->get('total', $cart->get('subtotal')), 0);
 	}
 
 	public function weight()
@@ -316,6 +330,9 @@ class Cart {
 	public function count($totalItems = false)
 	{
 		$cart = $this->getContentItems();
+
+		if( ! $cart )
+			return 0;
 
 		if( ! $totalItems)
 		{
@@ -523,7 +540,7 @@ class Cart {
 
 		$rowId = $this->generateRowId($id, $attributes);
 
-		if($cart->get('items')->has($rowId))
+		if($cart->get('items', new CartItemCollection([], $this->associatedModel, $this->associatedModelNamespace))->has($rowId))
 		{
 			$row = $cart->get('items')->get($rowId);
 
@@ -570,12 +587,14 @@ class Cart {
 	 */
 	protected function updateCart($cart)
 	{
-		if( $cart)
+		if( $cart )
 		{
 			$cart = $this->applyConditions($cart);
 		}
 
-		return $this->session->put($this->getInstance(), $cart);
+		$this->cart = $cart;
+
+		return $this->session->put($this->getInstance(), $this->cart);
 	}
 
 	/**
@@ -585,9 +604,14 @@ class Cart {
 	 */
 	public function getContent()
 	{
-		$content = ($this->session->has($this->getInstance())) ? $this->session->get($this->getInstance()) : new CartCollection(['items' => new CartCollection, 'conditions' => new CartItemConditionsCollection]);
+		if( ! $this->cart ){
+			$this->cart = $this->session->has( $this->getInstance() ) ? $this->session->get( $this->getInstance() ) : new CartCollection([
+				'items' => new CartCollection,
+				'conditions' => new CartItemConditionsCollection
+			]);
+		}
 
-		return $content;
+		return $this->cart;
 	}
 
 	/**
@@ -599,7 +623,7 @@ class Cart {
 	{
 		$content = $this->getContent();
 
-		return $content->get('items');
+		return $content->get('items', new CartCollection([]));
 	}
 
 	/**
@@ -699,51 +723,53 @@ class Cart {
 
 	protected function applyConditions($cart, $withDiscounts = true)
 	{
-		$cart = $this->applyItemsConditions($cart, true);
-
-		$appliedConditions = [];
-
-		$subtotal = $this->subtotal();
-
-		$cart->put('subtotal', $subtotal);
-
-		$order = $this->getConditionsOrder();
-
-		$this->conditions()->sortBy( function ($condition) use ($order) {
-			return array_search($condition->get('type'), $order) + count($order);
-		});
-
-		foreach($order as $type)
+		if( !$cart->get('items')->isEmpty() )
 		{
-			$results = 0;
+			$cart = $this->applyItemsConditions($cart, true);
 
-			if( ! $cart->get('disable', new Collection)->get($type, false) )
+			$appliedConditions = [];
+
+			$subtotal = $this->subtotal($cart);
+
+			$cart->put('subtotal', $subtotal);
+			$cart->put('total', $subtotal);
+
+			$order = $this->getConditionsOrder();
+
+			$this->conditions()->sortBy( function ($condition) use ($order) {
+				return array_search($condition->get('type'), $order) + count($order);
+			});
+
+			foreach($order as $type)
 			{
 				$results = 0;
 
-				$conditions = $this->conditions($type);
-
-				foreach($conditions as $k => $condition)
+				if( ! $cart->get('disable', new Collection)->get($type, false) )
 				{
-					$result = 0;
-					$subtotal = $condition->apply($cart);
+					$conditions = $this->conditions($type);
 
-					if( ! $condition->isInclusive() )
+					foreach($conditions as $k => $condition)
 					{
-						$cart->put($condition->target(), $subtotal);
-						$result = $condition->result();
+						$result = 0;
+						$subtotal = $condition->apply($cart);
 
-						$appliedConditions[$condition->get('name')] = $result;
+						if( ! $condition->isInclusive() )
+						{
+							$cart->put($condition->target(), $subtotal);
+							$result = $condition->result();
+
+							$appliedConditions[$condition->get('name')] = $result;
+						}
+
+						$results += $result;
 					}
-
-					$results += $result;
 				}
+
+				$cart->put($type, $results);
 			}
 
-			$cart->put($type, $results);
+			$cart->put('appliedConditions', $appliedConditions);
 		}
-
-		$cart->put('appliedConditions', $appliedConditions);
 
 		return $cart;
 	}

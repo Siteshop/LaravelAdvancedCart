@@ -32,7 +32,7 @@ class CartItemCollection extends Collection {
 	 * @param string   $associatedModel
 	 * @param string   $associatedModelNamespace
 	 */
-	public function __construct($items, $associatedModel, $associatedModelNamespace)
+	public function __construct($items = [], $associatedModel, $associatedModelNamespace)
 	{
 		parent::__construct($items);
 
