@@ -2,7 +2,7 @@
 
 use Illuminate\Support\Collection;
 
-class CartRowOptionsCollection extends Collection {
+class CartItemAttributesCollection extends Collection {
 
 	public function __construct($items)
 	{
@@ -19,7 +19,7 @@ class CartRowOptionsCollection extends Collection {
 		return NULL;
 	}
 
-	public function search($search, $strict = false)
+	public function search($search)
 	{
 		foreach($search as $key => $value)
 		{

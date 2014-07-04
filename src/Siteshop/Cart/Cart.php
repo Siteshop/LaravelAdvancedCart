@@ -41,6 +41,13 @@ class Cart {
 	protected $associatedModelNamespace;
 
 	/**
+	 *   Order in which the conditions are applied
+	 *
+	 *   @var  array
+	 */
+	protected $conditionsOrder = ['discount', 'tax', 'shipping'];
+
+	/**
 	 * Constructor
 	 *
 	 * @param Session $session Session class instance
@@ -95,9 +102,9 @@ class Cart {
 	 * @param string 	   $name    Name of the item
 	 * @param int    	   $qty     Item qty to add to the cart
 	 * @param float  	   $price   Price of one item
-	 * @param Array  	   $options Array of additional options, such as 'size' or 'color'
+	 * @param Array  	   $attributes Array of additional attributes, such as 'size' or 'color'
 	 */
-	public function add($id, $name = null, $qty = null, $price = null, Array $options = array(), Array $conditions = array())
+	public function add($id, $name = null, $qty = null, $price = null, $weight = null, $requires_shipping = null, Array $attributes = array(), Array $conditions = array(), Array $disable = array())
 	{
 		// If the first parameter is an array we need to call the add() function again
 		if(is_array($id))
@@ -111,27 +118,29 @@ class Cart {
 
 				foreach($id as $item)
 				{
-					$options = array_get($item, 'options', array());
+					$attributes = array_get($item, 'attributes', array());
 					$conditions = array_get($item, 'conditions', array());
-					$this->addRow($item['id'], $item['name'], $item['qty'], $item['price'], $options, $conditions);
+					$disable = array_get($item, 'disable', array());
+					$this->addRow($item['id'], $item['name'], $item['qty'], $item['price'], $item['weight'], $item['requires_shipping'], $attributes, $conditions, $disable);
 				}
 
 				return;
 			}
 
-			$options = array_get($id, 'options', array());
+			$attributes = array_get($id, 'attributes', array());
 			$conditions = array_get($id, 'conditions', array());
+			$disable = array_get($id, 'disable', array());
 
 			// Fire the cart.add event
-			$this->event->fire('cart.add', array_merge($id, array('options' => $options)));
+			$this->event->fire('cart.add', array_merge($id, array('attributes' => $attributes)));
 
-			return $this->addRow($id['id'], $id['name'], $id['qty'], $id['price'], $options, $conditions);
+			return $this->addRow($id['id'], $id['name'], $id['qty'], $id['price'], $id['weight'], $id['requires_shipping'], $attributes, $conditions, $disable);
 		}
 
 		// Fire the cart.add event
-		$this->event->fire('cart.add', compact('id', 'name', 'qty', 'price', 'options'));
+		$this->event->fire('cart.add', compact('id', 'name', 'qty', 'price', 'weight', 'requires_shipping', 'attributes', 'conditions', 'disable'));
 
-		return $this->addRow($id, $name, $qty, $price, $options, $conditions);
+		return $this->addRow($id, $name, $qty, $price, $weight, $requires_shipping, $attributes, $conditions, $disable);
 	}
 
 	/**
@@ -143,6 +152,8 @@ class Cart {
 	 */
 	public function update($rowId, $attribute)
 	{
+		$cart = $this->getContent();
+
 		if( ! $this->hasRowId($rowId)) throw new Exceptions\CartItemNotFoundException;
 
 		if(is_array($attribute))
@@ -150,13 +161,23 @@ class Cart {
 			// Fire the cart.update event
 			$this->event->fire('cart.update', $rowId);
 
-			return $this->updateAttribute($rowId, $attribute);
+			$items = $this->updateAttribute($rowId, $attribute);
+			$cart->put('items', $items);
+
+			$this->updateCart($cart);
+
+			return $items;
 		}
 
 		// Fire the cart.update event
 		$this->event->fire('cart.update', $rowId);
 
-		return $this->updateQty($rowId, $attribute);
+		$items = $this->updateQty($rowId, $attribute);
+		$cart->put('items', $items);
+
+		$this->updateCart($cart);
+
+		return $items;
 	}
 
 	/**
@@ -208,7 +229,7 @@ class Cart {
 	/**
 	 * Get the cart items
 	 *
-	 * @return CartRowCollection
+	 * @return CartItemCollection
 	 */
 	public function items()
 	{
@@ -235,7 +256,7 @@ class Cart {
 	 *
 	 * @return float
 	 */
-	public function total()
+	public function subtotal()
 	{
 		$total = 0;
 		$cart = $this->getContentItems();
@@ -250,7 +271,40 @@ class Cart {
 			$total += $row->subtotal;
 		}
 
-		return $total;
+		return max($total, 0);
+	}
+
+	public function total()
+	{
+		return max($this->getContent()->get('subtotal'), 0);
+	}
+
+	public function weight()
+	{
+		$total = 0;
+		$cart = $this->getContentItems();
+
+		if(empty($cart))
+		{
+			return $total;
+		}
+
+		foreach($cart AS $row)
+		{
+			$total += $row->total_weight;
+		}
+
+		return max($total, 0);
+	}
+
+	public function requiresShipping()
+	{
+		$results = $this->search(['requires_shipping' => 1]);
+
+		if( ! $results && $this->weight() == 0 )
+			return false;
+
+		return true;
 	}
 
 	/**
@@ -291,7 +345,7 @@ class Cart {
 	/**
 	 * Search if the cart has a item
 	 *
-	 * @param  Array  $search An array with the item ID and optional options
+	 * @param  Array  $search An array with the item ID and optional attributes
 	 * @return Array|boolean
 	 */
 	public function search(Array $search)
@@ -309,6 +363,121 @@ class Cart {
 		return (empty($rows)) ? false : $rows;
 	}
 
+	public function condition(Condition $condition)
+	{
+		$cart = $this->getContent();
+
+		$cart->get('conditions')->push($condition);
+
+		$this->updateCart($cart);
+	}
+
+	public function getConditionsOrder()
+	{
+		return $this->getContent()->get('conditionsOrder', $this->conditionsOrder);
+	}
+
+	public function setConditionsOrder($order)
+	{
+		$cart = $this->getContent();
+
+		$cart->put('conditionsOrder', $order);
+
+		$this->updateCart($cart);
+	}
+
+	public function setItemsConditionsOrder($order)
+	{
+		$cart = $this->getContent();
+
+		foreach($cart->get('items') as $item)
+		{
+			$item->setConditionsOrder($order);
+		}
+
+		$this->updateCart($cart);
+	}
+
+	public function conditions($type = null)
+	{
+		$conditions = $this->getContentConditions();
+
+		if( ! $type )
+			return $conditions;
+
+		return $conditions->filter(function ($condition) use ($type) {
+			return ($condition->get('type') === $type);
+		});
+	}
+
+	public function removeConditionByName($name)
+	{
+		$cart = $this->getContent();
+
+		$conditions = $cart->get('conditions')->filterBy(['name' => $name]);
+
+		foreach($conditions->all() as $k => $v)
+		{
+			$cart->get('conditions')->forget($k);
+		}
+
+		$this->updateCart($cart);
+	}
+
+	public function removeConditionByType($type)
+	{
+		$cart = $this->getContent();
+
+		$conditions = $cart->get('conditions')->filterBy(['type' => $type]);
+
+		foreach($conditions->all() as $k => $v)
+		{
+			$cart->get('conditions')->forget($k);
+		}
+
+		$this->updateCart($cart);
+	}
+
+	public function conditionsTotal($type = null)
+	{
+		$conditions = array_only( $this->getContent()->get('appliedConditions'), array_pluck($this->conditions($type)->toArray(), 'name') );
+
+		return $conditions;
+	}
+
+	public function conditionsTotalSum($type = null)
+	{
+		return array_sum( $this->conditionsTotal($type) );
+	}
+
+	public function addBilling($billing)
+	{
+		$cart = $this->getContent();
+
+		$cart->put('meta_billing', $billing);
+
+		$this->updateCart($cart);
+	}
+
+	public function getBilling()
+	{
+		return $this->getContent()->get('meta_billing', []);
+	}
+
+	public function addShipping($billing)
+	{
+		$cart = $this->getContent();
+
+		$cart->put('meta_shipping', $billing);
+
+		$this->updateCart($cart);
+	}
+
+	public function getShipping()
+	{
+		return $this->getContent()->get('meta_shipping', []);
+	}
+
 	/**
 	 * Add row to the cart
 	 *
@@ -316,11 +485,11 @@ class Cart {
 	 * @param string $name    Name of the item
 	 * @param int    $qty     Item qty to add to the cart
 	 * @param float  $price   Price of one item
-	 * @param Array  $options Array of additional options, such as 'size' or 'color'
+	 * @param Array  $attributes Array of additional attributes, such as 'size' or 'color'
 	 */
-	protected function addRow($id, $name, $qty, $price, Array $options = array(), Array $conditions = array())
+	protected function addRow($id, $name, $qty, $price, $weight, $requires_shipping, Array $attributes = array(), Array $conditions = array(), Array $disable = array())
 	{
-		if(empty($id) || empty($name) || empty($qty) || ! isset($price))
+		if(empty($id) || empty($name) || empty($qty) || ! isset($price) || ! isset($weight) || ! isset($requires_shipping))
 		{
 			throw new Exceptions\CartMissingRequiredIndexException;
 		}
@@ -335,7 +504,12 @@ class Cart {
 			throw new Exceptions\CartInvalidPriceException;
 		}
 
-		if( ! is_array($options))
+		if( ! is_numeric($weight))
+		{
+			throw new Exceptions\CartInvalidWeightException;
+		}
+
+		if( ! is_array($attributes))
 		{
 			throw new Exceptions\CartInvalidAttributesException;
 		}
@@ -347,16 +521,17 @@ class Cart {
 
 		$cart = $this->getContent();
 
-		$rowId = $this->generateRowId($id, $options);
+		$rowId = $this->generateRowId($id, $attributes);
 
 		if($cart->get('items')->has($rowId))
 		{
-			$row = $cart->get($rowId);
+			$row = $cart->get('items')->get($rowId);
+
 			$cart->put('items', $this->updateRow($rowId, array('qty' => $row->qty + $qty)));
 		}
 		else
 		{
-			$cart->put('items', $this->createRow($rowId, $id, $name, $qty, $price, $options, $conditions));
+			$cart->put('items', $this->createRow($rowId, $id, $name, $qty, $price, $weight, $requires_shipping, $attributes, $conditions, $disable));
 		}
 
 		return $this->updateCart($cart);
@@ -366,14 +541,14 @@ class Cart {
 	 * Generate a unique id for the new row
 	 *
 	 * @param  string  $id      Unique ID of the item
-	 * @param  Array   $options Array of additional options, such as 'size' or 'color'
+	 * @param  Array   $attributes Array of additional attributes, such as 'size' or 'color'
 	 * @return boolean
 	 */
-	protected function generateRowId($id, $options)
+	protected function generateRowId($id, $attributes)
 	{
-		ksort($options);
+		ksort($attributes);
 
-		return md5($id . serialize($options));
+		return md5($id . serialize($attributes));
 	}
 
 	/**
@@ -395,6 +570,11 @@ class Cart {
 	 */
 	protected function updateCart($cart)
 	{
+		if( $cart)
+		{
+			$cart = $this->applyConditions($cart);
+		}
+
 		return $this->session->put($this->getInstance(), $cart);
 	}
 
@@ -403,9 +583,9 @@ class Cart {
 	 *
 	 * @return Illuminate\Support\Collection
 	 */
-	protected function getContent()
+	public function getContent()
 	{
-		$content = ($this->session->has($this->getInstance())) ? $this->session->get($this->getInstance()) : new CartCollection(['items' => new CartCollection]);
+		$content = ($this->session->has($this->getInstance())) ? $this->session->get($this->getInstance()) : new CartCollection(['items' => new CartCollection, 'conditions' => new CartItemConditionsCollection]);
 
 		return $content;
 	}
@@ -420,6 +600,18 @@ class Cart {
 		$content = $this->getContent();
 
 		return $content->get('items');
+	}
+
+	/**
+	 * Get the carts content, if there is no cart content set yet, return a new empty Collection
+	 *
+	 * @return Illuminate\Support\Collection
+	 */
+	protected function getContentConditions()
+	{
+		$content = $this->getContent();
+
+		return $content->get('conditions', new CartItemConditionsCollection([]));
 	}
 
 	/**
@@ -447,10 +639,10 @@ class Cart {
 
 		foreach($attributes as $key => $value)
 		{
-			if($key == 'options')
+			if($key == 'attributes')
 			{
-				$options = $row->options->merge($value);
-				$row->put($key, $options);
+				$attributes = $row->attributes->merge($value);
+				$row->put($key, $attributes);
 			}
 			else
 			{
@@ -458,10 +650,10 @@ class Cart {
 			}
 		}
 
-		if( ! is_null(array_keys($attributes, array('qty', 'price'))))
+		if( ! is_null(array_keys($attributes, array('qty', 'price', 'weight'))))
 		{
 			$row->put('subtotal', $row->qty * $row->price);
-			$row->applyConditions();
+			$row->put('total_weight', $row->qty * $row->weight);
 		}
 
 		$cart->put($rowId, $row);
@@ -472,32 +664,96 @@ class Cart {
 	/**
 	 * Create a new row Object
 	 *
-	 * @param  string $rowId   The ID of the new row
-	 * @param  string $id      Unique ID of the item
-	 * @param  string $name    Name of the item
-	 * @param  int    $qty     Item qty to add to the cart
-	 * @param  float  $price   Price of one item
-	 * @param  Array  $options Array of additional options, such as 'size' or 'color'
+	 * @param  string $rowId      The ID of the new row
+	 * @param  string $id         Unique ID of the item
+	 * @param  string $name       Name of the item
+	 * @param  int    $qty        Item qty to add to the cart
+	 * @param  float  $price      Price of one item
+	 * @param  Array  $attributes Array of additional attributes, such as 'size' or 'color'
 	 * @return Collection
 	 */
-	protected function createRow($rowId, $id, $name, $qty, $price, $options, $conditions)
+	protected function createRow($rowId, $id, $name, $qty, $price, $weight, $requires_shipping, $attributes, $conditions, $disable)
 	{
 		$cart = $this->getContentItems();
 
-		$newRow = new CartRowCollection(array(
+		$newRow = new CartItemCollection(array(
 			'rowid' => $rowId,
 			'id' => $id,
 			'name' => $name,
 			'qty' => $qty,
-			'price' => $price,
-			'options' => new CartRowOptionsCollection($options),
-			'conditions' => new Collection($conditions),
+			'price' => floatval($price),
+			'original_price' => floatval($price),
+			'weight' => floatval($weight),
+			'total_weight' => $qty * floatval($weight),
+			'requires_shipping' => $requires_shipping,
+			'attributes' => new CartItemAttributesCollection($attributes),
+			'conditions' => new CartItemConditionsCollection($conditions),
+			'disable' => new Collection($disable),
 			'subtotal' => $qty * $price
 		), $this->associatedModel, $this->associatedModelNamespace);
 
-		$newRow->applyConditions();
-
 		$cart->put($rowId, $newRow);
+
+		return $cart;
+	}
+
+	protected function applyConditions($cart, $withDiscounts = true)
+	{
+		$cart = $this->applyItemsConditions($cart, true);
+
+		$appliedConditions = [];
+
+		$subtotal = $this->subtotal();
+
+		$cart->put('subtotal', $subtotal);
+
+		$order = $this->getConditionsOrder();
+
+		$this->conditions()->sortBy( function ($condition) use ($order) {
+			return array_search($condition->get('type'), $order) + count($order);
+		});
+
+		foreach($order as $type)
+		{
+			$results = 0;
+
+			if( ! $cart->get('disable', new Collection)->get($type, false) )
+			{
+				$results = 0;
+
+				$conditions = $this->conditions($type);
+
+				foreach($conditions as $k => $condition)
+				{
+					$result = 0;
+					$subtotal = $condition->apply($cart);
+
+					if( ! $condition->isInclusive() )
+					{
+						$cart->put($condition->target(), $subtotal);
+						$result = $condition->result();
+
+						$appliedConditions[$condition->get('name')] = $result;
+					}
+
+					$results += $result;
+				}
+			}
+
+			$cart->put($type, $results);
+		}
+
+		$cart->put('appliedConditions', $appliedConditions);
+
+		return $cart;
+	}
+
+	protected function applyItemsConditions($cart, $withDiscounts = true)
+	{
+		foreach($cart->get('items', []) as $key => $item)
+		{
+			$cart->get('items')->put($key, $item->applyConditions($withDiscounts));
+		}
 
 		return $cart;
 	}
