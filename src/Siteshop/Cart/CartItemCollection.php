@@ -126,13 +126,13 @@ class CartItemCollection extends Collection {
 	{
 		foreach($search as $key => $value)
 		{
-			if($key === 'attributes')
+			if($key == 'attributes')
 			{
 				$found = $this->{$key}->search($value);
 			}
 			else
 			{
-				$found = ($this->{$key} === $value) ? true : false;
+				$found = ($this->{$key} == $value) ? true : false;
 			}
 
 			if( ! $found) return false;

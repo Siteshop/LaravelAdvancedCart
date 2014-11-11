@@ -293,10 +293,11 @@ class Cart {
 		return max($cart->get('total', $cart->get('subtotal')), 0);
 	}
 
-	public function weight()
+	public function weight($cart = null)
 	{
 		$total = 0;
-		$cart = $this->getContentItems();
+		if($cart == null)
+			$cart = $this->getContentItems();
 
 		if(empty($cart))
 		{
@@ -465,6 +466,11 @@ class Cart {
 	public function conditionsTotalSum($type = null)
 	{
 		return array_sum( $this->conditionsTotal($type) );
+	}
+
+	public function getShippingCost()
+	{
+		return $this->conditions('shipping')->filterBy(['applied' => true]);
 	}
 
 	public function addBilling($billing)
@@ -723,7 +729,7 @@ class Cart {
 
 	protected function applyConditions($cart, $withDiscounts = true)
 	{
-		if( !$cart->get('items')->isEmpty() )
+		if( ! $cart->get('items')->isEmpty() )
 		{
 			$cart = $this->applyItemsConditions($cart, true);
 
@@ -733,6 +739,7 @@ class Cart {
 
 			$cart->put('subtotal', $subtotal);
 			$cart->put('total', $subtotal);
+			$cart->put('weight', $this->weight($cart->get('items')));
 
 			$order = $this->getConditionsOrder();
 
@@ -753,7 +760,7 @@ class Cart {
 						$result = 0;
 						$subtotal = $condition->apply($cart);
 
-						if( ! $condition->isInclusive() )
+						if( ! $condition->isInclusive() && $condition->result() )
 						{
 							$cart->put($condition->target(), $subtotal);
 							$result = $condition->result();
